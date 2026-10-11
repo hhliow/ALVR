@@ -9,7 +9,7 @@ use alvr_common::{
     glam::{Quat, Vec3},
     *,
 };
-use alvr_graphics::HandData;
+use alvr_graphics::{HAND_JOINT_COUNT, HandData, HandJoint};
 use alvr_packets::{ButtonEntry, ButtonValue, ClientStreamConfig, FaceData, FaceExpressions};
 use alvr_session::{BodyTrackingBDConfig, BodyTrackingSourcesConfig, FaceTrackingSourcesConfig};
 use openxr as xr;
@@ -914,6 +914,32 @@ pub fn get_hand_data(
         detached_grip_motion,
         skeleton_joints,
     }
+}
+
+// Unlike get_hand_data(), this is meant to be polled from the rendering thread, at display time.
+pub fn get_hand_joints_for_rendering(
+    reference_space: &xr::Space,
+    hand_source: &HandInteraction,
+    time: xr::Time,
+) -> Option<[HandJoint; HAND_JOINT_COUNT]> {
+    let tracker = hand_source.skeleton_tracker.as_ref()?;
+    let locations = reference_space
+        .locate_hand_joints(tracker, time)
+        .ok()
+        .flatten()?;
+
+    locations
+        .iter()
+        .all(|j| {
+            j.location_flags
+                .contains(SpaceLocationFlags::POSITION_VALID)
+        })
+        .then(|| {
+            std::array::from_fn(|i| HandJoint {
+                position: crate::from_xr_vec3(locations[i].pose.position),
+                radius: locations[i].radius,
+            })
+        })
 }
 
 pub fn update_buttons(

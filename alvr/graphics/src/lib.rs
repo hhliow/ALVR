@@ -1,7 +1,9 @@
+mod hand_mask;
 mod lobby;
 mod staging;
 mod stream;
 
+pub use hand_mask::{HAND_JOINT_COUNT, HandJoint, HandPassthroughFrame};
 pub use lobby::*;
 pub use stream::*;
 
@@ -60,8 +62,10 @@ macro_rules! ck {
 pub(crate) use ck;
 
 fn projection_from_fov(fov: Fov) -> Mat4 {
-    const NEAR: f32 = 0.1;
+    projection_from_fov_with_near(fov, 0.1)
+}
 
+fn projection_from_fov_with_near(fov: Fov, near: f32) -> Mat4 {
     let tanl = f32::tan(fov.left);
     let tanr = f32::tan(fov.right);
     let tanu = f32::tan(fov.up);
@@ -76,7 +80,7 @@ fn projection_from_fov(fov: Fov) -> Mat4 {
     Mat4::from_cols(
         Vec4::new(a, 0.0, c, 0.0),
         Vec4::new(0.0, -b, -d, 0.0),
-        Vec4::new(0.0, 0.0, -1.0, -NEAR),
+        Vec4::new(0.0, 0.0, -1.0, -near),
         Vec4::new(0.0, 0.0, -1.0, 0.0),
     )
     .transpose()

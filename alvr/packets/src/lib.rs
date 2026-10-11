@@ -6,8 +6,8 @@ use alvr_common::{
     semver::Version,
 };
 use alvr_session::{
-    ClientsidePostProcessingConfig, CodecType, PassthroughMode, PerformanceLevel, SessionConfig,
-    Settings,
+    ClientsidePostProcessingConfig, CodecType, HandPassthroughConfig, PassthroughMode,
+    PerformanceLevel, SessionConfig, Settings,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -399,6 +399,7 @@ pub enum FirewallRulesAction {
 #[derive(Serialize, Deserialize, PartialEq, Clone)]
 pub struct RealTimeConfig {
     pub passthrough: Option<PassthroughMode>,
+    pub hand_passthrough: Option<HandPassthroughConfig>,
     pub clientside_post_processing: Option<ClientsidePostProcessingConfig>,
     pub cpu_performance_level: Option<PerformanceLevel>,
     pub gpu_performance_level: Option<PerformanceLevel>,
@@ -409,6 +410,7 @@ impl RealTimeConfig {
     pub fn from_settings(settings: &Settings) -> Self {
         Self {
             passthrough: settings.video.passthrough.clone().into_option(),
+            hand_passthrough: settings.video.hand_passthrough.clone().into_option(),
             clientside_post_processing: settings
                 .video
                 .clientside_post_processing

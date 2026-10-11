@@ -548,9 +548,11 @@ pub fn entry_point() {
                         }
                     }
                     ClientCoreEvent::RealTimeConfig(config) => {
-                        if config.passthrough.is_some() && passthrough_layer.is_none() {
+                        let uses_passthrough =
+                            config.passthrough.is_some() || config.hand_passthrough.is_some();
+                        if uses_passthrough && passthrough_layer.is_none() {
                             passthrough_layer = PassthroughLayer::new(&xr_session, platform).ok();
-                        } else if config.passthrough.is_none() && passthrough_layer.is_some() {
+                        } else if !uses_passthrough && passthrough_layer.is_some() {
                             passthrough_layer = None;
                         }
 

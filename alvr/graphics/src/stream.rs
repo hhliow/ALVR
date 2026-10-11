@@ -1,4 +1,8 @@
-use super::{GraphicsContext, MAX_PUSH_CONSTANTS_SIZE, staging::StagingRenderer};
+use super::{
+    GraphicsContext, MAX_PUSH_CONSTANTS_SIZE,
+    hand_mask::{HandMaskRenderer, HandPassthroughFrame},
+    staging::StagingRenderer,
+};
 use alvr_common::{
     AlvrFoveatedEncodingParams, ViewParams,
     glam::{Mat4, UVec2, Vec2, Vec3, Vec4},
@@ -25,13 +29,17 @@ const TRANSFORM_CONST_OFFSET: u32 = 0;
 const VIEW_INDEX_CONST_OFFSET: u32 = TRANSFORM_SIZE;
 const PASSTHROUGH_MODE_OFFSET: u32 = VIEW_INDEX_CONST_OFFSET + U32_SIZE;
 const ALPHA_CONST_OFFSET: u32 = PASSTHROUGH_MODE_OFFSET + U32_SIZE;
-const CK_CHANNEL0_CONST_OFFSET: u32 = ALPHA_CONST_OFFSET + FLOAT_SIZE + U32_SIZE;
+const FLAGS_CONST_OFFSET: u32 = ALPHA_CONST_OFFSET + FLOAT_SIZE;
+const CK_CHANNEL0_CONST_OFFSET: u32 = FLAGS_CONST_OFFSET + U32_SIZE;
 const CK_CHANNEL1_CONST_OFFSET: u32 = CK_CHANNEL0_CONST_OFFSET + VEC4_SIZE;
 const CK_CHANNEL2_CONST_OFFSET: u32 = CK_CHANNEL1_CONST_OFFSET + VEC4_SIZE;
 const PUSH_CONSTANTS_SIZE: u32 = CK_CHANNEL2_CONST_OFFSET + VEC4_SIZE;
 const FOVEATION_EYE_UNIFORM_VEC4_COUNT: usize = 5;
 const FOVEATION_UNIFORM_VEC4_COUNT: usize = 1 + FOVEATION_EYE_UNIFORM_VEC4_COUNT * 2;
 const FOVEATION_UNIFORM_SIZE: usize = FOVEATION_UNIFORM_VEC4_COUNT * mem::size_of::<Vec4>();
+// Must match the FLAG_* constants in stream.wgsl
+const FLAG_HAND_MASK: u32 = 1 << 0;
+const FLAG_PREMULTIPLIED_ALPHA: u32 = 1 << 1;
 const _: () = assert!(
     PUSH_CONSTANTS_SIZE <= MAX_PUSH_CONSTANTS_SIZE,
     "Push constants size exceeds the maximum size"
@@ -52,6 +60,7 @@ struct ViewObjects {
 pub struct StreamRenderer {
     context: Rc<GraphicsContext>,
     staging_renderer: StagingRenderer,
+    hand_mask_renderer: HandMaskRenderer,
     pipeline: RenderPipeline,
     views_objects: [ViewObjects; 2],
     foveated_encoding: Option<AlvrFoveatedEncodingParams>,
@@ -107,6 +116,16 @@ impl StreamRenderer {
                     },
                     count: None,
                 },
+                BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
+                        sample_type: TextureSampleType::Float { filterable: true },
+                        view_dimension: TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -117,6 +136,8 @@ impl StreamRenderer {
         constants.extend([
             ("ENABLE_SRGB_CORRECTION", enable_srgb_correction.into()),
             ("ENCODING_GAMMA", encoding_gamma.into()),
+            ("TARGET_RESOLUTION_X", target_view_resolution.x.into()),
+            ("TARGET_RESOLUTION_Y", target_view_resolution.y.into()),
         ]);
 
         let (staging_resolution, initial_foveation_uniforms) =
@@ -214,9 +235,11 @@ impl StreamRenderer {
             ..Default::default()
         });
 
+        let hand_mask_renderer = HandMaskRenderer::new(&context, target_view_resolution);
+
         let mut view_objects = vec![];
         let mut staging_textures_gl = vec![];
-        for target_swapchain in &swapchain_textures {
+        for (view_idx, target_swapchain) in swapchain_textures.iter().enumerate() {
             let staging_texture = super::create_texture(device, staging_resolution, target_format);
 
             let bind_group = device.create_bind_group(&BindGroupDescriptor {
@@ -236,6 +259,12 @@ impl StreamRenderer {
                     BindGroupEntry {
                         binding: 2,
                         resource: foveation_buffer.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: BindingResource::TextureView(
+                            hand_mask_renderer.mask_view(view_idx),
+                        ),
                     },
                 ],
             });
@@ -277,6 +306,7 @@ impl StreamRenderer {
         Self {
             context,
             staging_renderer,
+            hand_mask_renderer,
             pipeline,
             views_objects: view_objects.try_into().unwrap(),
             foveated_encoding,
@@ -294,6 +324,7 @@ impl StreamRenderer {
         hardware_buffer: *mut c_void,
         view_params: [StreamViewParams; 2],
         passthrough: Option<&PassthroughMode>,
+        hand_passthrough: Option<&HandPassthroughFrame>,
         foveation_center_shifts: Option<[Vec2; 2]>,
     ) {
         // if hardware_buffer is available copy stream to staging texture
@@ -320,6 +351,26 @@ impl StreamRenderer {
             .context
             .device
             .create_command_encoder(&Default::default());
+
+        let hand_mask_rendered = hand_passthrough.is_some_and(|frame| {
+            self.hand_mask_renderer.render(
+                &self.context,
+                &mut encoder,
+                frame,
+                [
+                    &view_params[0].output_view_params,
+                    &view_params[1].output_view_params,
+                ],
+            )
+        });
+
+        let mut flags = 0;
+        if hand_mask_rendered {
+            flags |= FLAG_HAND_MASK;
+        }
+        if output_is_premultiplied_alpha(passthrough) {
+            flags |= FLAG_PREMULTIPLIED_ALPHA;
+        }
 
         for (view_idx, view_params) in view_params.iter().enumerate() {
             let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
@@ -389,10 +440,28 @@ impl StreamRenderer {
             );
             render_pass.set_bind_group(0, &self.views_objects[view_idx].bind_group, &[]);
             set_passthrough_push_constants(&mut render_pass, passthrough);
+            render_pass.set_push_constants(
+                ShaderStages::VERTEX_FRAGMENT,
+                FLAGS_CONST_OFFSET,
+                &flags.to_le_bytes(),
+            );
             render_pass.draw(0..4, 0..1);
         }
 
         self.context.queue.submit(iter::once(encoder.finish()));
+    }
+}
+
+/// Whether the stream layer must be composited with premultiplied alpha. When only hand passthrough
+/// is active, the output is opaque except for the hands cut-out, so it is treated as premultiplied.
+pub fn output_is_premultiplied_alpha(passthrough: Option<&PassthroughMode>) -> bool {
+    match passthrough {
+        None => true,
+        Some(PassthroughMode::Blend {
+            premultiplied_alpha,
+            ..
+        }) => *premultiplied_alpha,
+        Some(PassthroughMode::RgbChromaKey(_) | PassthroughMode::HsvChromaKey(_)) => true,
     }
 }
 

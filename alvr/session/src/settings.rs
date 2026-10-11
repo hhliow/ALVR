@@ -633,6 +633,21 @@ This is a similar effect to AR glasses."
     HsvChromaKey(#[schema(flag = "real-time")] HsvChromaKeyConfig),
 }
 
+#[derive(SettingsSchema, Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct HandPassthroughConfig {
+    #[schema(strings(
+        help = "Grow the hand cut-out beyond the tracked hand shape, to hide tracking latency and misalignment."
+    ))]
+    #[schema(flag = "real-time")]
+    #[schema(gui(slider(min = 0.0, max = 0.03, step = 0.001)), suffix = "m")]
+    pub dilation: f32,
+
+    #[schema(strings(help = "Width of the soft transition at the edge of the hand cut-out."))]
+    #[schema(flag = "real-time")]
+    #[schema(gui(slider(min = 0.0, max = 0.03, step = 0.001)), suffix = "m")]
+    pub edge_feathering: f32,
+}
+
 #[repr(u8)]
 #[derive(SettingsSchema, Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq)]
 #[schema(gui = "button_group")]
@@ -684,6 +699,13 @@ pub struct UpscalingConfig {
 pub struct VideoConfig {
     #[schema(flag = "real-time")]
     pub passthrough: Switch<PassthroughMode>,
+
+    #[schema(strings(
+        help = r"Show your real hands through passthrough on top of the streamed image. Requires hand tracking.
+To see your hands while holding controllers, also enable Headset > Multimodal tracking."
+    ))]
+    #[schema(flag = "real-time")]
+    pub hand_passthrough: Switch<HandPassthroughConfig>,
 
     pub bitrate: BitrateConfig,
 
@@ -1688,6 +1710,13 @@ pub fn session_settings_default() -> SettingsDefault {
                         value_end_min: 1.0,
                         value_end_max: 1.1,
                     },
+                },
+            },
+            hand_passthrough: SwitchDefault {
+                enabled: false,
+                content: HandPassthroughConfigDefault {
+                    dilation: 0.008,
+                    edge_feathering: 0.005,
                 },
             },
             clientside_post_processing: SwitchDefault {
