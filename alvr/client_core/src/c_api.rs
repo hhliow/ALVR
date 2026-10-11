@@ -23,7 +23,7 @@ use alvr_session::{CodecType, MediacodecPropType, MediacodecProperty, UpscalingC
 use std::{
     cell::RefCell,
     ffi::{CStr, CString, c_char, c_void},
-    ptr,
+    iter, ptr,
     rc::Rc,
     slice,
     time::{Duration, Instant},
@@ -266,7 +266,9 @@ pub extern "C" fn alvr_pause() {
 #[unsafe(no_mangle)]
 pub extern "C" fn alvr_poll_event(out_event: *mut AlvrEvent) -> bool {
     if let Some(context) = &*CLIENT_CORE_CONTEXT.lock()
-        && let Some(event) = context.poll_event()
+        // Scene depth is not supported through the C API
+        && let Some(event) = iter::from_fn(|| context.poll_event())
+            .find(|event| !matches!(event, ClientCoreEvent::SceneDepth { .. }))
     {
         let event = match event {
             ClientCoreEvent::UpdateHudMessage(message) => {
@@ -318,6 +320,7 @@ pub extern "C" fn alvr_poll_event(out_event: *mut AlvrEvent) -> bool {
                 }
             }
             ClientCoreEvent::RealTimeConfig(_) => AlvrEvent::RealTimeConfig {},
+            ClientCoreEvent::SceneDepth { .. } => unreachable!(),
         };
 
         unsafe { *out_event = event };

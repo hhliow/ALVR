@@ -8,14 +8,13 @@
 //!
 //! Mask texture channels:
 //! - R: hand coverage, 0..1 with soft edges.
-//! - G: normalized inverse view depth of the nearest hand surface, `HAND_DEPTH_NEAR / depth`, 0
-//!   where there is no hand.
+//! - G: nearness of the nearest hand surface, `1 - depth / HAND_DEPTH_MAX` (view axis depth).
 //!
-//! The G channel is not used yet. It is reserved for hand occlusion: when the streamed frame
-//! carries the scene depth, `hand_visibility()` in stream.wgsl can compare the two depths to hide
-//! the hand behind virtual objects, and fall back to an always visible hand otherwise.
+//! When the scene depth of the streamed frame is available, `hand_visibility()` in stream.wgsl
+//! compares it with G to hide the hands behind virtual objects (see scene_depth.rs). Otherwise the
+//! hands are always visible.
 
-use crate::{GraphicsContext, MAX_PUSH_CONSTANTS_SIZE};
+use crate::{GraphicsContext, MAX_PUSH_CONSTANTS_SIZE, scene_depth::SceneDepth};
 use alvr_common::{
     ViewParams,
     glam::{Mat4, UVec2, Vec3},
@@ -34,8 +33,8 @@ use wgpu::{
 
 pub const HAND_JOINT_COUNT: usize = 26;
 
-/// Hand depths nearer than this are clamped. Also used to normalize the inverse depth.
-const HAND_DEPTH_NEAR: f32 = 0.05;
+/// Hand depth corresponding to nearness 0. 8 bit nearness gives a 5 mm resolution.
+pub(crate) const HAND_DEPTH_MAX: f32 = 1.275;
 const PROJECTION_NEAR: f32 = 0.01;
 
 // The mask is soft-edged, a lower resolution is enough.
@@ -117,6 +116,8 @@ pub struct HandJoint {
 pub struct HandPassthroughFrame<'a> {
     pub config: &'a HandPassthroughConfig,
     pub hands: &'a [[HandJoint; HAND_JOINT_COUNT]],
+    /// Used for occlusion, if enabled in the config
+    pub scene_depth: Option<SceneDepth<'a>>,
 }
 
 // Matches VertexInput in hand_mask.wgsl
@@ -144,9 +145,9 @@ impl HandMaskRenderer {
 
         let shader_module =
             device.create_shader_module(include_wgsl!("../resources/hand_mask.wgsl"));
-        let constants = [("HAND_DEPTH_NEAR", HAND_DEPTH_NEAR as f64)];
+        let constants = [("HAND_DEPTH_MAX", HAND_DEPTH_MAX as f64)];
 
-        // Coverage and inverse depth are both merged with max: the nearest hand surface wins.
+        // Coverage and nearness are both merged with max: the nearest hand surface wins.
         let max_blend = BlendComponent {
             src_factor: BlendFactor::One,
             dst_factor: BlendFactor::One,

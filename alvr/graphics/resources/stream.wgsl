@@ -15,10 +15,15 @@ override ENABLE_FFE: bool = false;
 
 override TARGET_RESOLUTION_X: f32 = 1.0;
 override TARGET_RESOLUTION_Y: f32 = 1.0;
+override HAND_DEPTH_MAX: f32 = 1.0;
 
 // Must match the FLAG_* constants in stream.rs
 const FLAG_HAND_MASK: u32 = 1u << 0u;
 const FLAG_PREMULTIPLIED_ALPHA: u32 = 1u << 1u;
+const FLAG_SCENE_DEPTH: u32 = 1u << 2u;
+
+// Depth difference over which the hand fades out behind the scene, in meters
+const OCCLUSION_SOFTNESS: f32 = 0.015;
 
 struct PushConstant {
     reprojection_transform: mat4x4f,
@@ -48,8 +53,27 @@ struct FoveationUniforms {
 }
 @group(0) @binding(2) var<uniform> foveation: FoveationUniforms;
 
-// See hand_mask.rs. R: hand coverage, G: normalized inverse depth of the hand
+// See hand_mask.rs. R: hand coverage, G: hand nearness (1 - depth / HAND_DEPTH_MAX)
 @group(0) @binding(3) var hand_mask_texture: texture_2d<f32>;
+
+// See scene_depth.rs
+struct SceneDepthView {
+    // Rotation from the current view space to the depth view space, by columns
+    rotation_x: vec4f,
+    rotation_y: vec4f,
+    rotation_z: vec4f,
+    // FoV tangents: left, right, up, down
+    current_tangents: vec4f,
+    depth_tangents: vec4f,
+}
+struct SceneDepthUniforms {
+    views: array<SceneDepthView, 2>,
+    // x: distance corresponding to nearness 0
+    params: vec4f,
+}
+// Nearness of the scene, left and right eye side by side
+@group(1) @binding(0) var scene_depth_texture: texture_2d<f32>;
+@group(1) @binding(1) var<uniform> scene_depth: SceneDepthUniforms;
 
 struct VertexOutput {
     @builtin(position) position: vec4f,
@@ -161,7 +185,7 @@ fn fragment_main(@builtin(position) position: vec4f, @location(0) uv: vec2f) -> 
         // The mask is rendered with the same view and projection as this layer
         let mask_uv = position.xy / vec2f(TARGET_RESOLUTION_X, TARGET_RESOLUTION_Y);
         let hand_mask = textureSampleLevel(hand_mask_texture, stream_sampler, mask_uv, 0.0);
-        let hand = hand_visibility(hand_mask.r, hand_mask.g, corrected_uv);
+        let hand = hand_visibility(hand_mask.r, hand_mask.g, uv);
 
         alpha = alpha * (1.0 - hand);
         if (pc.flags & FLAG_PREMULTIPLIED_ALPHA) != 0u {
@@ -172,12 +196,64 @@ fn fragment_main(@builtin(position) position: vec4f, @location(0) uv: vec2f) -> 
     return vec4f(color, alpha);
 }
 
-// How much of the passthrough hand to show at this pixel.
-// Hand occlusion extension point: when the streamed frame carries the scene depth, sample it at
-// `stream_uv` and hide the hand where the scene is nearer than `hand_inv_depth` (see hand_mask.rs
-// for its encoding). Without scene depth, the hand is always visible.
-fn hand_visibility(hand_coverage: f32, hand_inv_depth: f32, stream_uv: vec2f) -> f32 {
-    return hand_coverage;
+// How much of the passthrough hand to show at this pixel. `view_uv` is the (unfoveated) position
+// in the input view. Without scene depth, the hand is always visible.
+fn hand_visibility(hand_coverage: f32, hand_nearness: f32, view_uv: vec2f) -> f32 {
+    if (pc.flags & FLAG_SCENE_DEPTH) == 0u || hand_coverage <= 0.0 {
+        return hand_coverage;
+    }
+
+    let view = scene_depth.views[pc.view_idx];
+
+    // Direction of this pixel in the current view, then in the view of the depth image
+    let tan_current = view.current_tangents;
+    let dir = vec3f(
+        mix(tan_current.x, tan_current.y, view_uv.x),
+        mix(tan_current.z, tan_current.w, view_uv.y),
+        -1.0
+    );
+    let rotation = mat3x3f(view.rotation_x.xyz, view.rotation_y.xyz, view.rotation_z.xyz);
+    let depth_dir = rotation * dir;
+    if depth_dir.z >= 0.0 {
+        return hand_coverage;
+    }
+    let tan_depth = view.depth_tangents;
+    let depth_tan = depth_dir.xy / -depth_dir.z;
+    let depth_uv = vec2f(
+        (depth_tan.x - tan_depth.x) / (tan_depth.y - tan_depth.x),
+        (tan_depth.z - depth_tan.y) / (tan_depth.z - tan_depth.w)
+    );
+    if any(depth_uv < vec2f(0.0)) || any(depth_uv > vec2f(1.0)) {
+        return hand_coverage;
+    }
+
+    // Compare distances along the pixel ray: the two depths are along different view axes
+    let ray_length = length(dir);
+    let hand_distance = (1.0 - hand_nearness) * HAND_DEPTH_MAX * ray_length;
+    let scene_axial_scale = ray_length / -depth_dir.z;
+
+    // Bilinear filtering of the occlusion test, not of the depth: averaging depths across an
+    // object edge would create phantom surfaces
+    let size = textureDimensions(scene_depth_texture);
+    let eye_size = vec2i(i32(size.x / 2u), i32(size.y));
+    let texel_pos = depth_uv * vec2f(eye_size) - 0.5;
+    let base = vec2i(floor(texel_pos));
+    let weights = texel_pos - floor(texel_pos);
+
+    var visibility = vec4f(1.0);
+    for (var i = 0; i < 4; i++) {
+        let offset = vec2i(i & 1, i >> 1u);
+        let texel = clamp(base + offset, vec2i(0), eye_size - 1) + vec2i(i32(pc.view_idx) * eye_size.x, 0);
+        let scene_nearness = textureLoad(scene_depth_texture, texel, 0).r;
+        if scene_nearness > 0.0 {
+            let scene_distance = (1.0 - scene_nearness) * scene_depth.params.x * scene_axial_scale;
+            visibility[i] = smoothstep(-OCCLUSION_SOFTNESS, OCCLUSION_SOFTNESS, scene_distance - hand_distance);
+        }
+    }
+    let top = mix(visibility.x, visibility.y, weights.x);
+    let bottom = mix(visibility.z, visibility.w, weights.x);
+
+    return hand_coverage * mix(top, bottom, weights.y);
 }
 
 fn chroma_key_mask(color: vec3f) -> f32 {

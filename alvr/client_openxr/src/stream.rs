@@ -1,6 +1,7 @@
 use crate::{
     graphics::{self, ProjectionLayerAlphaConfig, ProjectionLayerBuilder},
     interaction::{self, InteractionContext, InteractionSourcesConfig},
+    scene_depth::SceneDepthBuffer,
 };
 use alvr_client_core::{
     ClientCoreContext, VideoFrameMetadata,
@@ -15,7 +16,7 @@ use alvr_common::{
     parking_lot::RwLock,
 };
 use alvr_graphics::{GraphicsContext, HandPassthroughFrame, StreamRenderer, StreamViewParams};
-use alvr_packets::{ClientStreamConfig, RealTimeConfig, TrackingData};
+use alvr_packets::{ClientStreamConfig, RealTimeConfig, SceneDepthHeader, TrackingData};
 use alvr_session::{
     ClientsideFoveationConfig, ClientsideFoveationMode, ClientsidePostProcessingConfig, CodecType,
     HandPassthroughConfig, MediacodecProperty, PassthroughMode, UpscalingConfig,
@@ -97,6 +98,7 @@ pub struct StreamContext {
     renderer: StreamRenderer,
     decoder: Option<(VideoDecoderConfig, VideoDecoderSource)>,
     use_custom_reprojection: bool,
+    scene_depth: SceneDepthBuffer,
 }
 
 impl StreamContext {
@@ -243,6 +245,7 @@ impl StreamContext {
             target_view_resolution,
             renderer,
             decoder: None,
+            scene_depth: SceneDepthBuffer::default(),
         };
 
         this.update_reference_space();
@@ -333,6 +336,10 @@ impl StreamContext {
         }
     }
 
+    pub fn push_scene_depth(&mut self, header: SceneDepthHeader, nearness: Vec<u8>) {
+        self.scene_depth.push(header, nearness);
+    }
+
     pub fn update_real_time_config(&mut self, config: &RealTimeConfig) {
         self.config.passthrough = config.passthrough.clone();
         self.config.hand_passthrough = config.hand_passthrough.clone();
@@ -360,6 +367,9 @@ impl StreamContext {
         let (timestamp, frame_metadata, buffer_ptr) =
             if let Some((timestamp, buffer_ptr)) = frame_result {
                 if let Some(metadata) = self.core_context.report_compositor_start(timestamp) {
+                    self.scene_depth
+                        .report_frame_view_params(timestamp, metadata.view_params);
+
                     self.last_good_video_frame_metadata = VideoFrameMetadata {
                         foveation_center_shifts: metadata
                             .foveation_center_shifts
@@ -473,6 +483,11 @@ impl StreamContext {
                 .map(|config| HandPassthroughFrame {
                     config,
                     hands: &hands,
+                    scene_depth: if config.occlusion {
+                        self.scene_depth.get(timestamp)
+                    } else {
+                        None
+                    },
                 })
                 .as_ref(),
             frame_metadata

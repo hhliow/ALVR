@@ -4,6 +4,7 @@ mod graphics;
 mod interaction;
 mod lobby;
 mod passthrough;
+mod scene_depth;
 mod stream;
 
 use crate::stream::ParsedStreamConfig;
@@ -545,6 +546,11 @@ pub fn entry_point() {
                     ClientCoreEvent::DecoderConfig { codec, config_nal } => {
                         if let Some(stream) = &mut stream_context {
                             stream.maybe_initialize_decoder(codec, config_nal);
+                        }
+                    }
+                    ClientCoreEvent::SceneDepth { header, nearness } => {
+                        if let Some(stream) = &mut stream_context {
+                            stream.push_scene_depth(header, nearness);
                         }
                     }
                     ClientCoreEvent::RealTimeConfig(config) => {

@@ -1,5 +1,6 @@
 #pragma once
 #include "CEncoder.h"
+#include "SceneDepth.h"
 #include "alvr_server/PoseHistory.h"
 #include "alvr_server/Utils.h"
 #include "alvr_server/openvr_driver_wrap.h"
@@ -49,11 +50,13 @@ public:
     virtual void PostPresent(const vr::IVRDriverDirectModeComponent::Throttling_t* pThrottling);
 
     void CopyTexture(uint32_t layerCount);
+    void ProcessSceneDepth(uint32_t layerCount);
 
 private:
     std::shared_ptr<CD3DRender> m_pD3DRender;
     std::shared_ptr<CEncoder> m_pEncoder;
     std::shared_ptr<PoseHistory> m_poseHistory;
+    SceneDepth m_sceneDepth;
 
     // Resource for each process
     struct ProcessResource {

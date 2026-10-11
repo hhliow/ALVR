@@ -19,6 +19,7 @@ use bindings::*;
 use alvr_common::{
     BUTTON_INFO, HAND_LEFT_ID, HAND_RIGHT_ID, HAND_TRACKER_LEFT_ID, HAND_TRACKER_RIGHT_ID, HEAD_ID,
     Pose, ViewParams, error,
+    glam::UVec2,
     parking_lot::{Mutex, RwLock},
     settings_schema::Switch,
     warn,
@@ -675,6 +676,36 @@ extern "C" fn get_dynamic_encoder_params() -> FfiDynamicEncoderParams {
         }
     } else {
         FfiDynamicEncoderParams::default()
+    }
+}
+
+#[unsafe(export_name = "IsSceneDepthRequested")]
+extern "C" fn is_scene_depth_requested() -> bool {
+    SERVER_CORE_CONTEXT
+        .read()
+        .as_ref()
+        .is_some_and(|context| context.is_scene_depth_requested())
+}
+
+/// # Safety
+/// `nearness` must point to `eye_width * 2 * height` bytes.
+#[unsafe(export_name = "SendSceneDepth")]
+unsafe extern "C" fn send_scene_depth(
+    timestamp_ns: u64,
+    nearness: *const u8,
+    eye_width: u32,
+    height: u32,
+    max_distance: f32,
+) {
+    if let Some(context) = &*SERVER_CORE_CONTEXT.read() {
+        let nearness =
+            unsafe { std::slice::from_raw_parts(nearness, (eye_width * 2 * height) as usize) };
+        context.send_scene_depth(
+            Duration::from_nanos(timestamp_ns),
+            UVec2::new(eye_width, height),
+            max_distance,
+            nearness,
+        );
     }
 }
 

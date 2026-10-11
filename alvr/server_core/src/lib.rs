@@ -28,7 +28,7 @@ use alvr_events::{EventType, HapticsEvent};
 use alvr_filesystem as afs;
 use alvr_packets::{
     BatteryInfo, ButtonEntry, ClientConnectionsAction, DecoderInitializationConfig, Haptics,
-    VideoPacketHeader,
+    SceneDepthHeader, VideoPacketHeader,
 };
 use alvr_server_io::ServerSessionManager;
 use alvr_session::{CodecType, H264Profile, OpenvrProperty, Settings, SteamvrHmdInitConfig};
@@ -116,6 +116,7 @@ pub struct ConnectionContext {
     clients_to_be_removed: Mutex<HashSet<String>>,
     video_channel_sender: Mutex<Option<SyncSender<VideoPacket>>>,
     haptics_sender: Mutex<Option<StreamSender<Haptics>>>,
+    scene_depth_sender: Mutex<Option<StreamSender<SceneDepthHeader>>>,
 }
 
 pub fn create_recording_file(connection_context: &ConnectionContext, settings: &Settings) {
@@ -234,6 +235,7 @@ impl ServerCoreContext {
             clients_to_be_removed: Mutex::new(HashSet::new()),
             video_channel_sender: Mutex::new(None),
             haptics_sender: Mutex::new(None),
+            scene_depth_sender: Mutex::new(None),
         });
 
         let webserver_runtime = Runtime::new().unwrap();
@@ -370,6 +372,40 @@ impl ServerCoreContext {
         ) {
             sender
                 .send_header(&haptics::map_haptics(&config, haptics))
+                .ok();
+        }
+    }
+
+    /// Whether the client wants the scene depth, to occlude the passthrough hands.
+    pub fn is_scene_depth_requested(&self) -> bool {
+        self.connection_context.scene_depth_sender.lock().is_some()
+            && SESSION_MANAGER
+                .read()
+                .settings()
+                .video
+                .hand_passthrough
+                .as_option()
+                .is_some_and(|c| c.occlusion)
+    }
+
+    /// `nearness` contains the left and right eye side by side, see `SceneDepthHeader`.
+    pub fn send_scene_depth(
+        &self,
+        timestamp: Duration,
+        eye_resolution: UVec2,
+        max_distance: f32,
+        nearness: &[u8],
+    ) {
+        dbg_server_core!("send_scene_depth");
+
+        if let Some(sender) = &mut *self.connection_context.scene_depth_sender.lock() {
+            let header = SceneDepthHeader {
+                timestamp,
+                eye_resolution,
+                max_distance,
+            };
+            sender
+                .send_header_with_payload(&header, &alvr_packets::encode_scene_depth(nearness))
                 .ok();
         }
     }

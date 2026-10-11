@@ -646,6 +646,12 @@ pub struct HandPassthroughConfig {
     #[schema(flag = "real-time")]
     #[schema(gui(slider(min = 0.0, max = 0.03, step = 0.001)), suffix = "m")]
     pub edge_feathering: f32,
+    #[schema(strings(
+        help = r"Hide the hands behind virtual objects that are nearer than them.
+This works only with SteamVR apps that submit their depth buffer, and only with the Windows streamer. Otherwise the hands are always visible."
+    ))]
+    #[schema(flag = "real-time")]
+    pub occlusion: bool,
 }
 
 #[repr(u8)]
@@ -1717,6 +1723,7 @@ pub fn session_settings_default() -> SettingsDefault {
                 content: HandPassthroughConfigDefault {
                     dilation: 0.008,
                     edge_feathering: 0.005,
+                    occlusion: true,
                 },
             },
             clientside_post_processing: SwitchDefault {

@@ -212,6 +212,16 @@ extern "C" void ShutdownRuntime();
 extern "C" unsigned long long PathStringToHash(const char* path);
 extern "C" void ReportPresent(unsigned long long timestamp_ns, unsigned long long offset_ns);
 extern "C" void ReportComposed(unsigned long long timestamp_ns, unsigned long long offset_ns);
+// Scene depth for hand occlusion on the client. nearness holds the left and right eye side by side
+// (eyeWidth * 2 by height, top row first): 255 at the eye, 0 at or beyond maxDistance meters.
+extern "C" bool IsSceneDepthRequested();
+extern "C" void SendSceneDepth(
+    unsigned long long targetTimestampNs,
+    const unsigned char* nearness,
+    unsigned int eyeWidth,
+    unsigned int height,
+    float maxDistance
+);
 extern "C" FfiDynamicEncoderParams GetDynamicEncoderParams();
 extern "C" FfiFoveationCenters GetEyeTrackedFoveationCenters(unsigned long long targetTimestampNs);
 extern "C" void ReportEncoderFoveationCenters(

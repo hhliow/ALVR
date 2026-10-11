@@ -22,8 +22,8 @@ use alvr_events::{AdbEvent, ButtonEvent, EventType};
 use alvr_packets::{
     AUDIO, ClientConnectionResult, ClientConnectionsAction, ClientControlPacket,
     ClientNegotiatedStreamingConfig, ClientStatistics, HAPTICS, NegotiatedStreamingConfigExt,
-    RealTimeConfig, STATISTICS, ServerControlPacket, StreamConfigPacket, TRACKING, TrackingData,
-    VIDEO, VideoPacketHeader,
+    RealTimeConfig, SCENE_DEPTH, STATISTICS, ServerControlPacket, StreamConfigPacket, TRACKING,
+    TrackingData, VIDEO, VideoPacketHeader,
 };
 use alvr_session::{
     BodyTrackingSinkConfig, CodecType, ControllersEmulationMode, FrameSize, H264Profile, Settings,
@@ -927,6 +927,7 @@ fn connection_pipeline(
     let mut video_sender = socket.request_unreliable_stream(VIDEO);
     let game_audio_sender: alvr_sockets::StreamSender<()> = socket.request_unreliable_stream(AUDIO);
     let haptics_sender = socket.request_unreliable_stream(HAPTICS);
+    let scene_depth_sender = socket.request_unreliable_stream(SCENE_DEPTH);
 
     let mut control_receiver = socket.subscribe_to_reliable_stream()?;
     let mut microphone_receiver: alvr_sockets::StreamReceiver<()> =
@@ -940,6 +941,7 @@ fn connection_pipeline(
         std::sync::mpsc::sync_channel(initial_settings.connection.max_queued_server_video_frames);
     *ctx.video_channel_sender.lock() = Some(video_channel_sender);
     *ctx.haptics_sender.lock() = Some(haptics_sender);
+    *ctx.scene_depth_sender.lock() = Some(scene_depth_sender);
 
     let video_send_thread = thread::spawn({
         let ctx = Arc::clone(&ctx);
@@ -1470,6 +1472,7 @@ fn connection_pipeline(
     // This requests shutdown from threads
     *ctx.video_channel_sender.lock() = None;
     *ctx.haptics_sender.lock() = None;
+    *ctx.scene_depth_sender.lock() = None;
 
     *ctx.video_recording_file.lock() = None;
 

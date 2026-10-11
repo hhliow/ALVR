@@ -15,8 +15,9 @@ use alvr_common::{
 };
 use alvr_packets::{
     AUDIO, ClientConnectionResult, ClientControlPacket, ClientStatistics, ConnectionAcceptedInfo,
-    HAPTICS, Haptics, STATISTICS, ServerControlPacket, StreamConfigPacket, TRACKING, TrackingData,
-    VIDEO, VideoPacketHeader, VideoStreamingCapabilities, VideoStreamingCapabilitiesExt,
+    HAPTICS, Haptics, SCENE_DEPTH, STATISTICS, SceneDepthHeader, ServerControlPacket,
+    StreamConfigPacket, TRACKING, TrackingData, VIDEO, VideoPacketHeader,
+    VideoStreamingCapabilities, VideoStreamingCapabilitiesExt,
 };
 use alvr_session::{SocketProtocol, settings_schema::Switch};
 use alvr_sockets::{
@@ -271,6 +272,8 @@ fn connection_pipeline(
     let mut haptics_receiver =
         stream_socket.subscribe_to_stream::<Haptics>(HAPTICS, MAX_UNREAD_PACKETS);
     let statistics_sender = stream_socket.request_stream(STATISTICS);
+    let mut scene_depth_receiver =
+        stream_socket.subscribe_to_stream::<SceneDepthHeader>(SCENE_DEPTH, MAX_UNREAD_PACKETS);
 
     ctx.video_frame_metadata_queue.lock().clear();
 
@@ -393,6 +396,31 @@ fn connection_pipeline(
     } else {
         thread::spawn(|| ())
     };
+
+    let scene_depth_receive_thread = thread::spawn({
+        let ctx = Arc::clone(&ctx);
+        let event_queue = Arc::clone(&event_queue);
+        move || {
+            while is_streaming(&ctx) {
+                let data = match scene_depth_receiver.recv(STREAMING_RECV_TIMEOUT) {
+                    Ok(packet) => packet,
+                    Err(ConnectionError::TryAgain(_)) => continue,
+                    Err(ConnectionError::Other(_)) => return,
+                };
+                let Ok((header, encoded)) = data.get() else {
+                    return;
+                };
+
+                let len = (header.eye_resolution.x * 2 * header.eye_resolution.y) as usize;
+                match alvr_packets::decode_scene_depth(encoded, len) {
+                    Ok(nearness) => event_queue
+                        .lock()
+                        .push_back(ClientCoreEvent::SceneDepth { header, nearness }),
+                    Err(e) => debug!("Invalid scene depth: {e}"),
+                }
+            }
+        }
+    });
 
     let haptics_receive_thread = thread::spawn({
         let ctx = Arc::clone(&ctx);
@@ -584,6 +612,7 @@ fn connection_pipeline(
     game_audio_thread.join().ok();
     microphone_thread.join().ok();
     haptics_receive_thread.join().ok();
+    scene_depth_receive_thread.join().ok();
     control_send_thread.join().ok();
     control_receive_thread.join().ok();
     stream_receive_thread.join().ok();

@@ -24,7 +24,8 @@ use alvr_common::{
     warn,
 };
 use alvr_packets::{
-    BatteryInfo, ButtonEntry, ClientControlPacket, ClientStreamConfig, RealTimeConfig, TrackingData,
+    BatteryInfo, ButtonEntry, ClientControlPacket, ClientStreamConfig, RealTimeConfig,
+    SceneDepthHeader, TrackingData,
 };
 use alvr_session::CodecType;
 use alvr_system_info::Platform;
@@ -55,6 +56,11 @@ pub enum ClientCoreEvent {
         config_nal: Vec<u8>,
     },
     RealTimeConfig(RealTimeConfig),
+    // Decoded nearness, see SceneDepthHeader
+    SceneDepth {
+        header: SceneDepthHeader,
+        nearness: Vec<u8>,
+    },
 }
 
 // Note: this struct may change without breaking network protocol changes

@@ -1,10 +1,12 @@
 mod hand_mask;
 mod lobby;
+mod scene_depth;
 mod staging;
 mod stream;
 
 pub use hand_mask::{HAND_JOINT_COUNT, HandJoint, HandPassthroughFrame};
 pub use lobby::*;
+pub use scene_depth::SceneDepth;
 pub use stream::*;
 
 use alvr_common::{

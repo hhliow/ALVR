@@ -1,6 +1,7 @@
 use super::{
     GraphicsContext, MAX_PUSH_CONSTANTS_SIZE,
-    hand_mask::{HandMaskRenderer, HandPassthroughFrame},
+    hand_mask::{HAND_DEPTH_MAX, HandMaskRenderer, HandPassthroughFrame},
+    scene_depth::SceneDepthResources,
     staging::StagingRenderer,
 };
 use alvr_common::{
@@ -8,7 +9,12 @@ use alvr_common::{
     glam::{Mat4, UVec2, Vec2, Vec3, Vec4},
 };
 use alvr_session::{PassthroughMode, UpscalingConfig};
-use std::{cell::Cell, ffi::c_void, iter, mem, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    ffi::c_void,
+    iter, mem,
+    rc::Rc,
+};
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingResource, BindingType, Buffer, BufferBindingType,
@@ -40,6 +46,7 @@ const FOVEATION_UNIFORM_SIZE: usize = FOVEATION_UNIFORM_VEC4_COUNT * mem::size_o
 // Must match the FLAG_* constants in stream.wgsl
 const FLAG_HAND_MASK: u32 = 1 << 0;
 const FLAG_PREMULTIPLIED_ALPHA: u32 = 1 << 1;
+const FLAG_SCENE_DEPTH: u32 = 1 << 2;
 const _: () = assert!(
     PUSH_CONSTANTS_SIZE <= MAX_PUSH_CONSTANTS_SIZE,
     "Push constants size exceeds the maximum size"
@@ -61,6 +68,7 @@ pub struct StreamRenderer {
     context: Rc<GraphicsContext>,
     staging_renderer: StagingRenderer,
     hand_mask_renderer: HandMaskRenderer,
+    scene_depth: RefCell<SceneDepthResources>,
     pipeline: RenderPipeline,
     views_objects: [ViewObjects; 2],
     foveated_encoding: Option<AlvrFoveatedEncodingParams>,
@@ -138,6 +146,7 @@ impl StreamRenderer {
             ("ENCODING_GAMMA", encoding_gamma.into()),
             ("TARGET_RESOLUTION_X", target_view_resolution.x.into()),
             ("TARGET_RESOLUTION_Y", target_view_resolution.y.into()),
+            ("HAND_DEPTH_MAX", HAND_DEPTH_MAX.into()),
         ]);
 
         let (staging_resolution, initial_foveation_uniforms) =
@@ -186,12 +195,14 @@ impl StreamRenderer {
             ]);
         };
 
+        let scene_depth = SceneDepthResources::new(&context);
+
         let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
             label: None,
             // Note: Layout cannot be inferred because of a bug with push constants
             layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
                 label: None,
-                bind_group_layouts: &[&bind_group_layout],
+                bind_group_layouts: &[&bind_group_layout, scene_depth.bind_group_layout()],
                 push_constant_ranges: &[PushConstantRange {
                     stages: ShaderStages::VERTEX_FRAGMENT,
                     range: 0..PUSH_CONSTANTS_SIZE,
@@ -307,6 +318,7 @@ impl StreamRenderer {
             context,
             staging_renderer,
             hand_mask_renderer,
+            scene_depth: RefCell::new(scene_depth),
             pipeline,
             views_objects: view_objects.try_into().unwrap(),
             foveated_encoding,
@@ -371,6 +383,22 @@ impl StreamRenderer {
         if output_is_premultiplied_alpha(passthrough) {
             flags |= FLAG_PREMULTIPLIED_ALPHA;
         }
+        if hand_mask_rendered
+            && let Some(frame) = hand_passthrough
+            && frame.config.occlusion
+            && let Some(depth) = &frame.scene_depth
+            && self.scene_depth.borrow_mut().update(
+                &self.context,
+                depth,
+                [
+                    &view_params[0].input_view_params,
+                    &view_params[1].input_view_params,
+                ],
+            )
+        {
+            flags |= FLAG_SCENE_DEPTH;
+        }
+        let scene_depth = self.scene_depth.borrow();
 
         for (view_idx, view_params) in view_params.iter().enumerate() {
             let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
@@ -439,6 +467,7 @@ impl StreamRenderer {
                 &(view_idx as u32).to_le_bytes(),
             );
             render_pass.set_bind_group(0, &self.views_objects[view_idx].bind_group, &[]);
+            render_pass.set_bind_group(1, scene_depth.bind_group(), &[]);
             set_passthrough_push_constants(&mut render_pass, passthrough);
             render_pass.set_push_constants(
                 ShaderStages::VERTEX_FRAGMENT,

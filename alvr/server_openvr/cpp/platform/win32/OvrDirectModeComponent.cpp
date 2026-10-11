@@ -5,6 +5,7 @@ OvrDirectModeComponent::OvrDirectModeComponent(
 )
     : m_pD3DRender(pD3DRender)
     , m_poseHistory(poseHistory)
+    , m_sceneDepth(pD3DRender)
     , m_submitLayer(0) { }
 
 void OvrDirectModeComponent::SetEncoder(std::shared_ptr<CEncoder> pEncoder) {
@@ -32,8 +33,10 @@ void OvrDirectModeComponent::CreateSwapTextureSet(
     D3D11_TEXTURE2D_DESC SharedTextureDesc = {};
     DXGI_FORMAT format = (DXGI_FORMAT)pSwapTextureSetDesc->nFormat;
     SharedTextureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-    if (format == DXGI_FORMAT_R32G8X24_TYPELESS || format == DXGI_FORMAT_R32_TYPELESS) {
-        SharedTextureDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    bool isDepth = SceneDepth::IsSupportedDepthFormat(format);
+    if (isDepth) {
+        // Also sampleable, to extract the scene depth for hand occlusion
+        SharedTextureDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
     }
     SharedTextureDesc.ArraySize = 1;
     SharedTextureDesc.MipLevels = 1;
@@ -61,6 +64,13 @@ void OvrDirectModeComponent::CreateSwapTextureSet(
         HRESULT hr = m_pD3DRender->GetDevice()->CreateTexture2D(
             &SharedTextureDesc, NULL, &processResource->textures[i]
         );
+        if (FAILED(hr) && isDepth && (SharedTextureDesc.BindFlags & D3D11_BIND_SHADER_RESOURCE)) {
+            Warn("CreateSwapTextureSet: sampleable depth texture not supported, format=%d", format);
+            SharedTextureDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+            hr = m_pD3DRender->GetDevice()->CreateTexture2D(
+                &SharedTextureDesc, NULL, &processResource->textures[i]
+            );
+        }
         // LogDriver("texture%d %p res:%d %s", i, texture[i], hr, GetDxErrorStr(hr).c_str());
         if (FAILED(hr)) {
             Error("CreateSwapTextureSet CreateTexture2D %p %ls", hr, GetErrorStr(hr).c_str());
@@ -355,6 +365,35 @@ void OvrDirectModeComponent::CopyTexture(uint32_t layerCount) {
             debugText
         );
 
+        ProcessSceneDepth(layerCount);
+
         m_pD3DRender->GetContext()->Flush();
     }
+}
+
+void OvrDirectModeComponent::ProcessSceneDepth(uint32_t layerCount) {
+    if (IsSceneDepthRequested()) {
+        // Use the first layer that provides depth, normally the app's projection layer
+        for (uint32_t i = 0; i < layerCount; i++) {
+            ID3D11Texture2D* depthTextures[2] = {};
+            for (int eye = 0; eye < 2; eye++) {
+                auto it = m_handleMap.find((HANDLE)m_submitLayers[i][eye].hDepthTexture);
+                if (it != m_handleMap.end()) {
+                    depthTextures[eye] = it->second.first->textures[it->second.second].Get();
+                }
+            }
+
+            if (depthTextures[0] && depthTextures[1]) {
+                vr::VRTextureBounds_t bounds[2]
+                    = { m_submitLayers[i][0].bounds, m_submitLayers[i][1].bounds };
+                vr::HmdMatrix44_t projections[2]
+                    = { m_submitLayers[i][0].mProjection, m_submitLayers[i][1].mProjection };
+                m_sceneDepth.Process(depthTextures, bounds, projections, m_targetTimestampNs);
+                break;
+            }
+        }
+    }
+
+    // Keep draining previous readbacks even if no longer requested
+    m_sceneDepth.Poll();
 }

@@ -1,3 +1,7 @@
+mod scene_depth;
+
+pub use scene_depth::*;
+
 use alvr_common::{
     AlvrFoveatedEncodingParams, BodySkeleton, ConnectionState, DeviceMotion, LogSeverity, Pose,
     ViewParams,
@@ -25,6 +29,7 @@ pub const HAPTICS: u16 = 1;
 pub const AUDIO: u16 = 2;
 pub const VIDEO: u16 = 3;
 pub const STATISTICS: u16 = 4;
+pub const SCENE_DEPTH: u16 = 5;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct VideoStreamingCapabilitiesExt {

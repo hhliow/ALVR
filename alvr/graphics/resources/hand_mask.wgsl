@@ -1,7 +1,7 @@
 // Renders the tracked hands as capsules into the hand mask texture (see hand_mask.rs).
-// Output: R = coverage, G = normalized inverse view depth of the nearest hand surface.
+// Output: R = coverage, G = nearness of the nearest hand surface (1 - depth / HAND_DEPTH_MAX).
 
-override HAND_DEPTH_NEAR: f32;
+override HAND_DEPTH_MAX: f32;
 
 struct PushConstant {
     projection: mat4x4f,
@@ -97,7 +97,7 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
 
     // Front surface of the capsule along the ray
     let half_chord = sqrt(max(input.radius * input.radius - distance * distance, 0.0));
-    let view_depth = max((t - half_chord) * -dir.z, HAND_DEPTH_NEAR);
+    let view_depth = (t - half_chord) * -dir.z;
 
-    return vec4f(coverage, HAND_DEPTH_NEAR / view_depth, 0.0, 0.0);
+    return vec4f(coverage, saturate(1.0 - view_depth / HAND_DEPTH_MAX), 0.0, 0.0);
 }
