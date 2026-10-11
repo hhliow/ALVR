@@ -14,11 +14,11 @@ use alvr_common::{
     glam::{UVec2, Vec2},
     parking_lot::RwLock,
 };
-use alvr_graphics::{GraphicsContext, StreamRenderer, StreamViewParams};
+use alvr_graphics::{GraphicsContext, HandPassthroughFrame, StreamRenderer, StreamViewParams};
 use alvr_packets::{ClientStreamConfig, RealTimeConfig, TrackingData};
 use alvr_session::{
     ClientsideFoveationConfig, ClientsideFoveationMode, ClientsidePostProcessingConfig, CodecType,
-    MediacodecProperty, PassthroughMode, UpscalingConfig,
+    HandPassthroughConfig, MediacodecProperty, PassthroughMode, UpscalingConfig,
 };
 use alvr_system_info::Platform;
 use openxr as xr;
@@ -38,6 +38,7 @@ pub struct ParsedStreamConfig {
     pub encoding_gamma: f32,
     pub enable_hdr: bool,
     pub passthrough: Option<PassthroughMode>,
+    pub hand_passthrough: Option<HandPassthroughConfig>,
     pub foveated_encoding_config: Option<AlvrFoveatedEncodingParams>,
     pub clientside_foveation_config: Option<ClientsideFoveationConfig>,
     pub clientside_post_processing: Option<ClientsidePostProcessingConfig>,
@@ -57,6 +58,7 @@ impl ParsedStreamConfig {
             encoding_gamma: config.negotiated_config.encoding_gamma,
             enable_hdr: config.negotiated_config.enable_hdr,
             passthrough: config.settings.video.passthrough.as_option().cloned(),
+            hand_passthrough: config.settings.video.hand_passthrough.as_option().cloned(),
             foveated_encoding_config: config.negotiated_config.foveated_encoding,
             clientside_foveation_config: config
                 .settings
@@ -249,7 +251,7 @@ impl StreamContext {
     }
 
     pub fn uses_passthrough(&self) -> bool {
-        self.config.passthrough.is_some()
+        self.config.passthrough.is_some() || self.config.hand_passthrough.is_some()
     }
 
     pub fn update_reference_space(&mut self) {
@@ -333,6 +335,7 @@ impl StreamContext {
 
     pub fn update_real_time_config(&mut self, config: &RealTimeConfig) {
         self.config.passthrough = config.passthrough.clone();
+        self.config.hand_passthrough = config.hand_passthrough.clone();
         self.config.clientside_post_processing = config.clientside_post_processing.clone();
     }
 
@@ -430,6 +433,25 @@ impl StreamContext {
             openxr_display_time = vsync_time;
         }
 
+        // Hands are located at display time, so that the cut-out is not affected by the streaming
+        // latency.
+        let hands = if self.config.hand_passthrough.is_some() {
+            let int_ctx = self.interaction_context.read();
+            int_ctx
+                .hands_interaction
+                .iter()
+                .filter_map(|hand| {
+                    interaction::get_hand_joints_for_rendering(
+                        &self.stage_reference_space,
+                        hand,
+                        xr_vsync_time,
+                    )
+                })
+                .collect::<Vec<_>>()
+        } else {
+            vec![]
+        };
+
         self.renderer.render(
             buffer_ptr,
             [
@@ -445,6 +467,14 @@ impl StreamContext {
                 },
             ],
             self.config.passthrough.as_ref(),
+            self.config
+                .hand_passthrough
+                .as_ref()
+                .map(|config| HandPassthroughFrame {
+                    config,
+                    hands: &hands,
+                })
+                .as_ref(),
             frame_metadata
                 .foveation_center_shifts
                 .map(|centers| centers.map(Vec2::from_array)),
@@ -499,19 +529,11 @@ impl StreamContext {
                             .image_rect(rect),
                     ),
             ],
-            self.config
-                .passthrough
-                .clone()
-                .map(|mode| ProjectionLayerAlphaConfig {
-                    premultiplied: matches!(
-                        mode,
-                        PassthroughMode::Blend {
-                            premultiplied_alpha: true,
-                            ..
-                        } | PassthroughMode::RgbChromaKey(_)
-                            | PassthroughMode::HsvChromaKey(_)
-                    ),
-                }),
+            self.uses_passthrough().then(|| ProjectionLayerAlphaConfig {
+                premultiplied: alvr_graphics::output_is_premultiplied_alpha(
+                    self.config.passthrough.as_ref(),
+                ),
+            }),
             clientside_post_processing,
         );
 

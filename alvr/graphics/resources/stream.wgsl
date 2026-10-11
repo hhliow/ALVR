@@ -13,12 +13,19 @@ override UPSCALE_EDGE_SHARPNESS: f32 = 2.0;
 
 override ENABLE_FFE: bool = false;
 
+override TARGET_RESOLUTION_X: f32 = 1.0;
+override TARGET_RESOLUTION_Y: f32 = 1.0;
+
+// Must match the FLAG_* constants in stream.rs
+const FLAG_HAND_MASK: u32 = 1u << 0u;
+const FLAG_PREMULTIPLIED_ALPHA: u32 = 1u << 1u;
+
 struct PushConstant {
     reprojection_transform: mat4x4f,
     view_idx: u32,
     passthrough_mode: u32, // 0: Blend, 1: RGB chroma key, 2: HSV chroma key
     blend_alpha: f32,
-    _align: u32,
+    flags: u32,
     ck_channel0: vec4f,
     ck_channel1: vec4f,
     ck_channel2: vec4f,
@@ -41,6 +48,9 @@ struct FoveationUniforms {
 }
 @group(0) @binding(2) var<uniform> foveation: FoveationUniforms;
 
+// See hand_mask.rs. R: hand coverage, G: normalized inverse depth of the hand
+@group(0) @binding(3) var hand_mask_texture: texture_2d<f32>;
+
 struct VertexOutput {
     @builtin(position) position: vec4f,
     @location(0) uv: vec2f,
@@ -57,7 +67,7 @@ fn vertex_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 }
 
 @fragment
-fn fragment_main(@location(0) uv: vec2f) -> @location(0) vec4f {
+fn fragment_main(@builtin(position) position: vec4f, @location(0) uv: vec2f) -> @location(0) vec4f {
     var corrected_uv = uv;
     // tell upscaler to target a lower resolution for the edges
     var upscale_source_resolution = 1.0;
@@ -147,7 +157,27 @@ fn fragment_main(@location(0) uv: vec2f) -> @location(0) vec4f {
         alpha = mask;
     }
 
+    if (pc.flags & FLAG_HAND_MASK) != 0u {
+        // The mask is rendered with the same view and projection as this layer
+        let mask_uv = position.xy / vec2f(TARGET_RESOLUTION_X, TARGET_RESOLUTION_Y);
+        let hand_mask = textureSampleLevel(hand_mask_texture, stream_sampler, mask_uv, 0.0);
+        let hand = hand_visibility(hand_mask.r, hand_mask.g, corrected_uv);
+
+        alpha = alpha * (1.0 - hand);
+        if (pc.flags & FLAG_PREMULTIPLIED_ALPHA) != 0u {
+            color = color * (1.0 - hand);
+        }
+    }
+
     return vec4f(color, alpha);
+}
+
+// How much of the passthrough hand to show at this pixel.
+// Hand occlusion extension point: when the streamed frame carries the scene depth, sample it at
+// `stream_uv` and hide the hand where the scene is nearer than `hand_inv_depth` (see hand_mask.rs
+// for its encoding). Without scene depth, the hand is always visible.
+fn hand_visibility(hand_coverage: f32, hand_inv_depth: f32, stream_uv: vec2f) -> f32 {
+    return hand_coverage;
 }
 
 fn chroma_key_mask(color: vec3f) -> f32 {
